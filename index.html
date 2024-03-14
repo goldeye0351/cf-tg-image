@@ -1,0 +1,139 @@
+addEventListener('fetch', event => {
+  event.respondWith(handleRequest(event.request))
+})
+
+async function handleRequest(request) {
+  let targetURL = 'https://telegra.ph'; 
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>51XMI 免费图床</title>
+        <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css">
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                background-color: #000000;
+                color:white;
+            }
+
+            .container {
+              max-width: 380px;    
+              margin: 100px auto;
+              padding: 50px;
+              border-radius: 30px;
+              box-shadow: 0 0 15px rgb(0, 255, 0);  
+            }
+
+            .upload-btn-wrapper {
+                position: relative;
+                width:100%;
+                overflow: hidden;
+                display: inline-block;
+                background-color: #007BFF;
+                color: #FFF;
+                border-radius: 10px;
+                padding: 10px 25px;
+                cursor: pointer;
+                transition: background-color 0.3s;
+            }
+
+            .upload-btn-wrapper:hover {
+                background-color: #0056b3;
+            }
+
+            .upload-btn-wrapper input[type=file] {
+                font-size: 100px;
+                position: absolute;
+                left: 0;
+                top: 0;
+                opacity: 0;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2 class="text-center">Telegraph Image Hosting</h2>
+            <p class="text-center text-muted">Free & Unlimited Image Hosting</p>
+            <hr>
+            <div class="upload-btn-wrapper text-center">
+                <span>Upload an Image</span>
+                <input type="file" name="file" id="fileInput" accept="image/png, image/jpeg, image/jpg, image/gif">
+            </div>
+            <div id="uploadStatus" style="margin-top: 20px;"></div>
+            <hr>
+            <p class="text-center">Thanks to <a href="https://telegra.ph">Telegraph</a> & <a href="https://cloudflare.com">Cloudflare</a></p>
+
+        </div>
+
+        <script>
+            const fileInput = document.getElementById('fileInput');
+            const uploadStatus = document.getElementById('uploadStatus');
+
+            fileInput.addEventListener('change', function() {
+                const file = fileInput.files[0];
+                if (file) {
+                    uploadImage(file);
+                }
+            });
+
+            function uploadImage(file) {
+                const formData = new FormData();
+                formData.append('file', file);
+
+                fetch('https://pichub.51xmi.com/upload', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    const src = 'https://pichub.51xmi.com' + data[0].src;
+                    uploadStatus.innerHTML = \`
+                        <div class="alert alert-success">Upload successful!</div>
+                        <img src="\${src}" class="img-fluid mb-3" alt="Uploaded Image">
+                        <div class="input-group">
+                          <input type="text" class="form-control" id="imageUrl" value="\${src}">
+                          <div class="input-group-append">
+                            <button class="btn btn-outline-secondary" type="button" onclick="copyImageUrl()">Copy URL</button>
+                          </div>
+                        </div>
+                    \`;
+                })
+                .catch(error => {
+                    uploadStatus.innerHTML = '<div class="alert alert-danger">Upload failed. Please try again.</div>';
+                });
+            }
+
+            function copyImageUrl() {
+                const imageUrl = document.getElementById('imageUrl');
+                imageUrl.select();
+                document.execCommand('copy');
+                alert('URL Copied to Clipboard!');
+            }
+        </script>
+    </body>
+    </html>
+  `;
+
+
+if (request.url.startsWith('https://pichub.51xmi.com/upload')  //为了api捷径上传图/ //改为你的地址
+    ||
+    request.url.startsWith('https://pichub.51xmi.com/file') )  //为了能访问图  //改为你的地址
+    { 
+    targetURL = 'https://telegra.ph';
+    const newRequest = new Request(targetURL + new URL(request.url).pathname, request);
+    newRequest.headers.delete('Host');
+    newRequest.headers.delete('Referer');
+    const response = await fetch(newRequest);
+    return response;
+  }
+
+  // 如果请求路径既不是 "/upload" 也不是 "/file"，则访问指定网址
+  else {
+    //targetURL = 'https://51xmi.com/pichub';  //访问你的网站中的地址,请用这两行 
+    //return Response.redirect(targetURL, 301);   //访问默认能上传图片的, 请用下面这行
+    return new Response(htmlContent, {      headers: {        "Content-Type": "text/html"      }    });
+  }
+}
