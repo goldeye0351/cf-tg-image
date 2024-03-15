@@ -29,7 +29,6 @@ async function handleRequest(request) {
 
             .upload-btn-wrapper {
                 position: relative;
-                width:100%;
                 overflow: hidden;
                 display: inline-block;
                 background-color: #007BFF;
@@ -58,10 +57,12 @@ async function handleRequest(request) {
             <h2 class="text-center">Telegraph Image Hosting</h2>
             <p class="text-center text-muted">Free & Unlimited Image Hosting</p>
             <hr>
+          <div class=" text-center">
             <div class="upload-btn-wrapper text-center">
                 <span>Upload an Image</span>
                 <input type="file" name="file" id="fileInput" accept="image/png, image/jpeg, image/jpg, image/gif">
             </div>
+          </div>
             <div id="uploadStatus" style="margin-top: 20px;"></div>
             <hr>
             <p class="text-center">Thanks to <a href="https://telegra.ph">Telegraph</a> & <a href="https://cloudflare.com">Cloudflare</a></p>
