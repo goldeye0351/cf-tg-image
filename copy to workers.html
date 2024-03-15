@@ -10,6 +10,7 @@ async function handleRequest(request) {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="icon" href="https://51xmi.com/favicon.ico">
         <title>免费图床</title>
         <style>
             body {
@@ -20,13 +21,14 @@ async function handleRequest(request) {
 
             .container {
               max-width: 380px;    
+              background-color: #111111;    
               margin: 100px auto;
               padding: 50px;
               border-radius: 30px;
               box-shadow: 0 0 15px rgb(0, 255, 0);  
             }
 
-            .upload-btn-wrapper {
+            .btn-wrapper {
                 position: relative;                
                 overflow: hidden;
                 display: inline-block;
@@ -38,11 +40,11 @@ async function handleRequest(request) {
                 transition: background-color 0.3s;
             }
 
-            .upload-btn-wrapper:hover {
+            .btn-wrapper:hover {
                 background-color: #0056b3;
             }
 
-            .upload-btn-wrapper input[type=file] {
+            .btn-wrapper input[type=file] {
                 font-size: 100px;
                 position: absolute;
                 left: 0;
@@ -54,9 +56,9 @@ async function handleRequest(request) {
     <body>
         <div class="container" style="text-align: center;" >
             <h2>Telegraph Image Hosting</h2>
-            <p class="text-muted">Free & Unlimited Image Hosting</p>
+            <p>Free & Unlimited Image Hosting</p>
             <hr>
-            <div class="upload-btn-wrapper">
+            <div class="btn-wrapper">
                 <span>Upload an Image</span>
                 <input type="file" name="file" id="fileInput" accept="image/png, image/jpeg, image/jpg, image/gif">
             </div>
@@ -82,26 +84,21 @@ async function handleRequest(request) {
                 const formData = new FormData();
                 formData.append('file', file);
 
-                fetch('https://pic.51xmi.com/upload', {
+                fetch('https://xxx.xxx.com/upload', {
                     method: 'POST',
                     body: formData
                 })
                 .then(response => response.json())
                 .then(data => {
-                    const src = 'https://pic.51xmi.com' + data[0].src;
+                    const src = 'https://xxx.xxx.com' + data[0].src;
                     uploadStatus.innerHTML = \`
-                        <div class="alert alert-success">Upload successful!</div>
-                        <img src="\${src}"  style="width: -webkit-fill-available;" alt="Uploaded Image">
-                        <div class="input-group">
-                          <input type="text" class="form-control" id="imageUrl" value="\${src}">
-                          <div class="input-group-append">
-                            <button class="btn btn-outline-secondary" type="button" onclick="copyImageUrl()">Copy URL</button>
-                          </div>
-                        </div>
+                        <img src="\${src}"  style="width: -webkit-fill-available; border-radius: 30px;" alt="Uploaded Image">
+                        <input type="text" id="imageUrl" value="\${src}">
+                        <button id="copy-btn" class='btn-wrapper'  type="button" onclick="copyImageUrl()" style="margin: 10px; border: 1px; ">Copy</button>
                     \`;
                 })
                 .catch(error => {
-                    uploadStatus.innerHTML = '<div class="alert alert-danger">Upload failed. Please try again.</div>';
+                    uploadStatus.innerHTML = '<div style="color: coral; font-size: larger;">Failed. 😓 </div>';
                 });
             }
 
@@ -109,30 +106,39 @@ async function handleRequest(request) {
                 const imageUrl = document.getElementById('imageUrl');
                 imageUrl.select();
                 document.execCommand('copy');
-                alert('URL Copied to Clipboard!');
+                document.getElementById('copy-btn').innerHTML= "Copied ✨";
+                setTimeout(() => {
+                    document.getElementById('copy-btn').innerHTML = "Copy";
+                }, 1000);
             }
         </script>
     </body>
     </html>
-  `;
+`;
 
 
-if (request.url.startsWith('https://pic.51xmi.com/upload')  //为了api捷径上传图/ //改为你的地址
+if (request.url.startsWith('https://xxx.xxx.com/upload')  //为了api捷径上传图/ //改为你的地址
     ||
-    request.url.startsWith('https://pic.51xmi.com/file') )  //为了能访问图  //改为你的地址
+    request.url.startsWith('https://xxx.xxx.com/file') )  //为了能访问图  //改为你的地址
     { 
     targetURL = 'https://telegra.ph';
     const newRequest = new Request(targetURL + new URL(request.url).pathname, request);
     newRequest.headers.delete('Host');
     newRequest.headers.delete('Referer');
     const response = await fetch(newRequest);
-    return response;
-  }
+    const headers = new Headers(response.headers);    // 添加 CORS 标头
+    headers.set('Access-Control-Allow-Origin', '*'); // 建议改成只允许自己的跨域: 'https://51xmi.com', 没有限制: '*'
+    return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: headers
+    });
+}
 
-  // 如果请求路径既不是 "/upload" 也不是 "/file"，则访问指定网址
-  else {
+// 如果请求路径既不是 "/upload" 也不是 "/file"，则访问指定网址
+else {
     //targetURL = 'https://51xmi.com/pichub';  //访问你的网站中的地址,请用这两行 
     //return Response.redirect(targetURL, 301);   //访问默认能上传图片的, 请用下面这行
     return new Response(htmlContent, {      headers: {        "Content-Type": "text/html"      }    });
-  }
+}
 }
