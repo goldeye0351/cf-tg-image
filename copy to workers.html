@@ -10,8 +10,7 @@ async function handleRequest(request) {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>51XMI 免费图床</title>
-        <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css">
+        <title>免费图床</title>
         <style>
             body {
                 font-family: Arial, sans-serif;
@@ -28,7 +27,7 @@ async function handleRequest(request) {
             }
 
             .upload-btn-wrapper {
-                position: relative;
+                position: relative;                
                 overflow: hidden;
                 display: inline-block;
                 background-color: #007BFF;
@@ -53,20 +52,18 @@ async function handleRequest(request) {
         </style>
     </head>
     <body>
-        <div class="container">
-            <h2 class="text-center">Telegraph Image Hosting</h2>
-            <p class="text-center text-muted">Free & Unlimited Image Hosting</p>
+        <div class="container" style="text-align: center;" >
+            <h2>Telegraph Image Hosting</h2>
+            <p class="text-muted">Free & Unlimited Image Hosting</p>
             <hr>
-          <div class=" text-center">
-            <div class="upload-btn-wrapper text-center">
+            <div class="upload-btn-wrapper">
                 <span>Upload an Image</span>
                 <input type="file" name="file" id="fileInput" accept="image/png, image/jpeg, image/jpg, image/gif">
             </div>
-          </div>
             <div id="uploadStatus" style="margin-top: 20px;"></div>
             <hr>
-            <p class="text-center">Thanks to <a href="https://telegra.ph">Telegraph</a> & <a href="https://cloudflare.com">Cloudflare</a></p>
-            <p class="text-center">GitHub: <a href="https://github.com/goldeye0351/cf-tg-image">CF TG IMAGES </a></p>
+            <p>Thanks to <a style="color: springgreen;"  href="https://telegra.ph">Telegraph</a> & <a style="color: springgreen;"  href="https://cloudflare.com">Cloudflare</a></p>
+            <p>GitHub: <a style="color: springgreen;"  href="https://github.com/goldeye0351/cf-tg-image">CF TG IMAGES </a></p>
 
         </div>
 
@@ -85,13 +82,13 @@ async function handleRequest(request) {
                 const formData = new FormData();
                 formData.append('file', file);
 
-                fetch('https://pichub.51xmi.com/upload', {
+                fetch('https://pic.51xmi.com/upload', {
                     method: 'POST',
                     body: formData
                 })
                 .then(response => response.json())
                 .then(data => {
-                    const src = 'https://pichub.51xmi.com' + data[0].src;
+                    const src = 'https://pic.51xmi.com' + data[0].src;
                     uploadStatus.innerHTML = \`
                         <div class="alert alert-success">Upload successful!</div>
                         <img src="\${src}" class="img-fluid mb-3" alt="Uploaded Image">
@@ -120,9 +117,9 @@ async function handleRequest(request) {
   `;
 
 
-if (request.url.startsWith('https://pichub.51xmi.com/upload')  //为了api捷径上传图/ //改为你的地址
+if (request.url.startsWith('https://pic.51xmi.com/upload')  //为了api捷径上传图/ //改为你的地址
     ||
-    request.url.startsWith('https://pichub.51xmi.com/file') )  //为了能访问图  //改为你的地址
+    request.url.startsWith('https://pic.51xmi.com/file') )  //为了能访问图  //改为你的地址
     { 
     targetURL = 'https://telegra.ph';
     const newRequest = new Request(targetURL + new URL(request.url).pathname, request);
