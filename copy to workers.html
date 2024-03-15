@@ -91,7 +91,7 @@ async function handleRequest(request) {
                     const src = 'https://pic.51xmi.com' + data[0].src;
                     uploadStatus.innerHTML = \`
                         <div class="alert alert-success">Upload successful!</div>
-                        <img src="\${src}" class="img-fluid mb-3" alt="Uploaded Image">
+                        <img src="\${src}"  style="width: -webkit-fill-available;" alt="Uploaded Image">
                         <div class="input-group">
                           <input type="text" class="form-control" id="imageUrl" value="\${src}">
                           <div class="input-group-append">
