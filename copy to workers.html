@@ -1,144 +1,223 @@
-addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request))
-})
+//  api upload  get   api post  + 网页 post
+var corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
+  "Access-Control-Allow-Headers": "Content-Type"
+};
 
-async function handleRequest(request) {
-  let targetURL = 'https://telegra.ph'; 
-  const htmlContent = `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <link rel="icon" href="https://51xmi.com/favicon.ico">
-        <title>免费图床</title>
-        <style>
-            body {
-                font-family: Arial, sans-serif;
-                background-color: #000000;
-                color:white;
-            }
 
-            .container {
-              max-width: 380px;    
-              background-color: #111111;    
-              margin: 100px auto;
-              padding: 50px;
-              border-radius: 30px;
-              box-shadow: 0 0 15px rgb(0, 255, 0);  
-            }
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);  
+    let targetURL = 'https://telegra.ph'; 
 
-            .btn-wrapper {
-                position: relative;                
-                overflow: hidden;
-                display: inline-block;
-                background-color: #007BFF;
-                color: #FFF;
-                border-radius: 10px;
-                padding: 10px 25px;
-                cursor: pointer;
-                transition: background-color 0.3s;
-            }
+    if (request.method === "OPTIONS") { return new Response(null, { headers: corsHeaders });  } 
 
-            .btn-wrapper:hover {
-                background-color: #0056b3;
-            }
+    else if (request.method === "POST" && url.pathname === "/upload") {
+      try {
+        const formData = await request.formData();
+        const file = formData.get('file');
+        
+        if (!file) {
+          throw new Error("No file uploaded");
+        }
 
-            .btn-wrapper input[type=file] {
-                font-size: 100px;
-                position: absolute;
-                left: 0;
-                top: 0;
-                opacity: 0;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container" style="text-align: center;" >
-            <h2>Telegraph Image Hosting</h2>
-            <p>Free & Unlimited Image Hosting</p>
-            <hr>
-            <div class="btn-wrapper">
-                <span>Upload an Image</span>
-                <input type="file" name="file" id="fileInput" accept="image/png, image/jpeg, image/jpg, image/gif">
-            </div>
-            <div id="uploadStatus" style="margin-top: 20px;"></div>
-            <hr>
-            <p>Thanks to <a style="color: springgreen;"  href="https://telegra.ph">Telegraph</a> & <a style="color: springgreen;"  href="https://cloudflare.com">Cloudflare</a></p>
-            <p>GitHub: <a style="color: springgreen;"  href="https://github.com/goldeye0351/cf-tg-image">CF TG IMAGES </a></p>
+        // 上传到 Telegraph
+        const fileName = file.name;
+        const telegraPhFormData = new FormData();
+        telegraPhFormData.append('file', file);
+        const telegraPhResponse = await fetch('https://telegra.ph/upload', { 
+          method: 'POST', 
+          body: telegraPhFormData 
+        });
+        const telegraPhData = await telegraPhResponse.json();
+        const imageUrl = "https://pichub.51xmi.com" + telegraPhData[0].src;
 
+        // 保存到 D1 数据库
+        await env.myd1.prepare(`INSERT INTO pichub (url, fname, c_time) VALUES (?1, ?2, ?3)`).bind(imageUrl, fileName, Date.now()).run();
+
+
+        return new Response(JSON.stringify([{src: telegraPhData[0].src}]), {
+          headers: {
+            "Content-Type": "application/json",
+            ...corsHeaders
+          }
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: {
+            "Content-Type": "application/json",
+            ...corsHeaders
+          }
+        });
+      }
+    } 
+
+    else if (request.url.startsWith('https://pichub.51xmi.com/file')) {
+      targetURL = 'https://telegra.ph';
+      const newRequest = new Request(targetURL + new URL(request.url).pathname, request);
+      newRequest.headers.delete('Host');
+      newRequest.headers.delete('Referer');
+      const response = await fetch(newRequest);
+      const headers = new Headers(response.headers);    // 添加 CORS 标头
+      headers.set('Access-Control-Allow-Origin', '*'); // 只允许自己的跨域, 全部请用 '*'
+      headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      headers.set('Access-Control-Allow-Headers', 'Content-Type');
+  
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: headers
+      });
+    } 
+
+    else if (request.method === "GET" && url.pathname === "/api") {   
+      const headers = request.headers;
+      const authorization = headers.get("Authorization");
+      const APIKEY="password";
+      if (!authorization || authorization !== `Bearer ${APIKEY}`) {    return fetch("https://http.cat/401")  }
+
+      const result = await env.myd1.prepare("SELECT id, fname, url, c_time FROM pichub ORDER BY id DESC").all();
+      if (result?.success && result.results) {
+        return new Response(JSON.stringify({
+          data: result.results
+        }), {
+          headers: {
+            "content-type": "application/json;charset=UTF-8",
+            ...corsHeaders
+          }
+        });
+      } else {
+        return new Response(JSON.stringify({
+          data: "fail"
+        }), {
+          headers: {
+            "content-type": "application/json;charset=UTF-8",
+            ...corsHeaders
+          }
+        });
+      }
+    }  
+
+    else { return new Response(htmlContent, { headers: { "Content-Type": "text/html"    }  });  }
+  }
+};
+
+const htmlContent = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta property="og:title" content="免费图床" />
+    <meta property="og:image" content="https://51xmi.com/favicon.ico" />
+
+    <link rel="icon" href="https://51xmi.com/favicon.ico">
+    <title>免费图床</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #000000;
+            color:white;
+        }
+
+        .container {
+          max-width: 380px;
+          background-color: #111111;    
+          margin: 100px auto;
+          padding: 50px;
+          border-radius: 30px;
+          box-shadow: 0 0 15px rgb(0, 255, 0);  
+        }
+
+        .btn-wrapper {
+            position: relative;                
+            overflow: hidden;
+            display: inline-block;
+            background-color: #007BFF;
+            color: #FFF;
+            border-radius: 10px;
+            padding: 10px 25px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        .btn-wrapper:hover {
+            background-color: #0056b3;
+        }
+
+        .btn-wrapper input[type=file] {
+            font-size: 100px;
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container" style="text-align: center;" >
+        <h2>Telegraph Image Hosting</h2>
+        <p>Free & Unlimited Image Hosting</p>
+        <hr>
+        <div class="btn-wrapper">
+            <span>Upload an Image</span>
+            <input type="file" name="file" id="fileInput" accept="image/*, video/*" data-umami-event="pichub图床统计">
         </div>
+        <div id="uploadStatus" style="margin-top: 20px;"></div>
+        <hr>
+        <p>Thanks to <a style="color: springgreen;"  href="https://telegra.ph">Telegraph</a> & <a style="color: springgreen;"  href="https://cloudflare.com">Cloudflare</a></p>
+        <p>GitHub: <a style="color: springgreen;"  href="https://github.com/goldeye0351/cf-tg-image">CF TG IMAGES </a></p>
+        <p>51xMI: <a style="color: springgreen;"  href="https://51xmi.com">51xMI.com </a></p>
 
-        <script>
-            const fileInput = document.getElementById('fileInput');
-            const uploadStatus = document.getElementById('uploadStatus');
+    </div>
 
-            fileInput.addEventListener('change', function() {
-                const file = fileInput.files[0];
-                if (file) {
-                    uploadImage(file);
-                }
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const uploadStatus = document.getElementById('uploadStatus');
+
+        fileInput.addEventListener('change', function() {
+            const file = fileInput.files[0];
+            if (file) {
+                uploadImage(file);
+            }
+        });
+
+        function uploadImage(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            fetch('/upload', {  
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                const src = 'https://pichub.317210.xyz' + data[0].src;
+                uploadStatus.innerHTML = \`
+                    <img src="\${src}"  style="width: -webkit-fill-available; border-radius: 30px;" alt="Uploaded Image">
+                    <input type="text" id="imageUrl" value="\${src}">
+                    <button id="copy-btn" class='btn-wrapper'  type="button" onclick="copyImageUrl()" style="margin: 10px; border: 1px; ">Copy</button>
+                \`;
+            })
+            .catch(error => {
+                uploadStatus.innerHTML = '<div style="color: coral; font-size: larger;">Failed. 😓 </div>';
             });
+        }
 
-            function uploadImage(file) {
-                const formData = new FormData();
-                formData.append('file', file);
-
-                fetch('https://xxx.xxx.com/upload', {
-                    method: 'POST',
-                    body: formData
-                })
-                .then(response => response.json())
-                .then(data => {
-                    const src = 'https://xxx.xxx.com' + data[0].src;
-                    uploadStatus.innerHTML = \`
-                        <img src="\${src}"  style="width: -webkit-fill-available; border-radius: 30px;" alt="Uploaded Image">
-                        <input type="text" id="imageUrl" value="\${src}">
-                        <button id="copy-btn" class='btn-wrapper'  type="button" onclick="copyImageUrl()" style="margin: 10px; border: 1px; ">Copy</button>
-                    \`;
-                })
-                .catch(error => {
-                    uploadStatus.innerHTML = '<div style="color: coral; font-size: larger;">Failed. 😓 </div>';
-                });
-            }
-
-            function copyImageUrl() {
-                const imageUrl = document.getElementById('imageUrl');
-                imageUrl.select();
-                document.execCommand('copy');
-                document.getElementById('copy-btn').innerHTML= "Copied ✨";
-                setTimeout(() => {
-                    document.getElementById('copy-btn').innerHTML = "Copy";
-                }, 1000);
-            }
-        </script>
-    </body>
-    </html>
+        function copyImageUrl() {
+            const imageUrl = document.getElementById('imageUrl');
+            imageUrl.select();
+            document.execCommand('copy');
+            document.getElementById('copy-btn').innerHTML= "Copied ✨";
+            setTimeout(() => {
+                document.getElementById('copy-btn').innerHTML = "Copy";
+            }, 1000);
+        }
+    </script>
+    <script defer src="https://umami.51xmi.com/script.js" data-website-id="6a873ef2-259b-4e69-a63c-1306d6695bd2">
+    <\/script>
+</body>
+</html>
 `;
-
-
-if (request.url.startsWith('https://xxx.xxx.com/upload')  //为了api捷径上传图/ //改为你的地址
-    ||
-    request.url.startsWith('https://xxx.xxx.com/file') )  //为了能访问图  //改为你的地址
-    { 
-    targetURL = 'https://telegra.ph';
-    const newRequest = new Request(targetURL + new URL(request.url).pathname, request);
-    newRequest.headers.delete('Host');
-    newRequest.headers.delete('Referer');
-    const response = await fetch(newRequest);
-    const headers = new Headers(response.headers);    // 添加 CORS 标头
-    headers.set('Access-Control-Allow-Origin', '*'); // 建议改成只允许自己的跨域: 'https://51xmi.com', 没有限制: '*'
-    return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: headers
-    });
-}
-
-// 如果请求路径既不是 "/upload" 也不是 "/file"，则访问指定网址
-else {
-    //targetURL = 'https://51xmi.com/pichub';  //访问你的网站中的地址,请用这两行 
-    //return Response.redirect(targetURL, 301);   //访问默认能上传图片的, 请用下面这行
-    return new Response(htmlContent, {      headers: {        "Content-Type": "text/html"      }    });
-}
-}
