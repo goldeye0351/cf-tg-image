@@ -1,6 +1,6 @@
 ## 单一文件workers图床.直接把代码copy过去就可以了
 ### if startswith  upload or file  跳转到tg官方地址. 实现api 苹果捷径上传. 
-
+### 增加绑定d1数据库功能
 ## 演示地址
 
 ## https://pichub.51xmi.com
@@ -14,3 +14,4 @@
 - 设置 触发器, 增加一个自定义域, 再把代码中我的域名修改为你的域名 就可以了
  
 
+同时提供api功能
