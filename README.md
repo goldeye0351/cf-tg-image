@@ -5,7 +5,7 @@
 
 ## https://pichub.51xmi.com
  
- ![pichub 51xmi](https://pichub.51xmi.com/photos/file_36.jpg)
+ ![pichub 51xmi](./file_36.jpg)
  
 - 打开cloudflare CF网站, 
 - 点左面的workers and pages. 创建应用程序 
