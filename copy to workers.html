@@ -2,13 +2,16 @@
 var corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
-  "Access-Control-Allow-Headers": "Content-Type"
+  "Access-Control-Allow-Headers": "Content-Type, Authorization"
 };
 
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);  
+    const botToken = env.botToken
+    const chatId = env.chatId
+    const domain = env.domain
     let targetURL = 'https://telegra.ph'; 
 
     if (request.method === "OPTIONS") { return new Response(null, { headers: corsHeaders });  } 
@@ -16,28 +19,52 @@ export default {
     else if (request.method === "POST" && url.pathname === "/upload") {
       try {
         const formData = await request.formData();
-        const file = formData.get('file');
-        
+        const file = formData.get('file');        
         if (!file) {
           throw new Error("No file uploaded");
         }
-
-        // 上传到 Telegraph
         const fileName = file.name;
-        const telegraPhFormData = new FormData();
-        telegraPhFormData.append('file', file);
-        const telegraPhResponse = await fetch('https://telegra.ph/upload', { 
-          method: 'POST', 
-          body: telegraPhFormData 
-        });
-        const telegraPhData = await telegraPhResponse.json();
-        const imageUrl = "https://pichub.51xmi.com" + telegraPhData[0].src;
+
+        // 判断文件大小
+        const fileSize = file.size;
+        let imageUrl;
+
+        if (fileSize > 4 * 1024 * 1024) {
+          // 文件大于 4MB，存储到 R2 图床  //如果没有R2 图床, 也可以都用电报的图床
+          const fName =`pichub/${fileName}/${Date.now()}/${fileName}`;//这几行是R2图床
+          const fileHandle = await env.R2.put(fName, file);
+          imageUrl = `https://r2.${domain}/${fName}`; //这个换成你的r2的地址,如果也是r2就不用换
+        } else {
+          // 文件小于 4MB，存储到 Telegraph 图床 //电报图床, 原来的公开的不能用了, 必须要botToken才能用了.
+          const sendPhotoUrl = `https://api.telegram.org/bot${botToken}/sendPhoto`  
+
+          const telegraPhFormData = new FormData();
+                  telegraPhFormData.append('photo', file);
+                  telegraPhFormData.append('chat_id', chatId)
+
+          const telegraPhResponse = await fetch(sendPhotoUrl, { 
+            method: 'POST', 
+            body: telegraPhFormData 
+          });
+          const sendPhotoData = await telegraPhResponse.json();
+          const fileId = sendPhotoData.result.photo[sendPhotoData.result.photo.length - 1].file_id
+          // 获取文件信息
+          const getFileUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`
+          const getFileResponse = await fetch(getFileUrl)
+          const getFileData = await getFileResponse.json()
+
+          if (!getFileData.ok) {
+              return new Response('Failed to get file info', { status: 400 })
+          }
+          // 2. 获取文件路径
+          const filePath = getFileData.result.file_path
+          imageUrl = `https://pichub.${domain}/`+filePath    //这个换成你的,如果也是pichub就不用换
+         }
 
         // 保存到 D1 数据库
-        await env.myd1.prepare(`INSERT INTO pichub (url, fname, c_time) VALUES (?1, ?2, ?3)`).bind(imageUrl, fileName, Date.now()).run();
+        await env.myd1.prepare(`INSERT INTO pichub (url, fname, c_time) VALUES (?1, ?2, ?3)`).bind(imageUrl, fileName, Date.now()).run();  ////这个可以换成你的,如果表名一样不用换
 
-
-        return new Response(JSON.stringify([{src: telegraPhData[0].src}]), {
+        return new Response(JSON.stringify([{src: imageUrl}]), {
           headers: {
             "Content-Type": "application/json",
             ...corsHeaders
@@ -54,7 +81,7 @@ export default {
       }
     } 
 
-    else if (request.url.startsWith('https://pichub.51xmi.com/file')) {
+    else if (request.url.startsWith('https://pichub.51xmi.com/file')) { //这是原来的tg图床, 新的不行了, 原来的都支持
       targetURL = 'https://telegra.ph';
       const newRequest = new Request(targetURL + new URL(request.url).pathname, request);
       newRequest.headers.delete('Host');
@@ -72,13 +99,12 @@ export default {
       });
     } 
 
-    else if (request.method === "GET" && url.pathname === "/api") {   
+    else if (request.method === "GET" && url.pathname === "/api") {   //获取以往所的有图
       const headers = request.headers;
       const authorization = headers.get("Authorization");
-      const APIKEY="password";
-      if (!authorization || authorization !== `Bearer ${APIKEY}`) {    return fetch("https://http.cat/401")  }
+      if (!authorization || authorization !== `Bearer ${env.APIKEY}`) {    return fetch("https://http.cat/401")  }  //不想认证,可以删除这
 
-      const result = await env.myd1.prepare("SELECT id, fname, url, c_time FROM pichub ORDER BY id DESC").all();
+      const result = await env.myd1.prepare("SELECT * FROM pichub ORDER BY id DESC").all();    //换成你的 ,如果表名一样就不用换
       if (result?.success && result.results) {
         return new Response(JSON.stringify({
           data: result.results
@@ -99,6 +125,70 @@ export default {
         });
       }
     }  
+
+    else if (request.method === "POST" && url.pathname === "/api") {   //通过api上传,别的worker调用
+      const headers = request.headers;
+      const body = await request.json();
+      const fname = body.fname;
+      const url = body.url;      
+      const authorization = headers.get("Authorization");  //不想要可以删这两行
+      if (!authorization || authorization !== `Bearer ${env.APIKEY}`) {    return fetch("https://http.cat/401")  } //不想要可以删这两行
+
+      const result = await env.myd1.prepare(`INSERT INTO pichub (url, fname, c_time) VALUES (?1, ?2, ?3)`).bind(url, fname, Date.now()).run(); //换成你的,如果表名列名一样就不用换
+      if (result?.success && result.results) {
+        return new Response(JSON.stringify({
+          data: result
+        }), {
+          headers: {
+            "content-type": "application/json;charset=UTF-8",
+            ...corsHeaders
+          }
+        });
+      } else {
+        return new Response(JSON.stringify({
+          data: "fail"
+        }), {
+          headers: {
+            "content-type": "application/json;charset=UTF-8",
+            ...corsHeaders
+          }
+        });
+      }
+    }  
+
+    else if (request.method === "GET" && url.pathname.startsWith("/photos")) {   // 电报图床显示  
+
+      const pathParts = url.pathname.split('/')
+      const filePath = pathParts.slice(1).join('/') // 移除开头的斜杠，保留完整路径
+
+      const telegramUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`
+    
+      try {  // 添加错误处理
+        const response = await fetch(telegramUrl)
+        
+        if (!response.ok) {
+          throw new Error(`Telegram API responded with status ${response.status}`)
+        }
+    
+        const newHeaders = new Headers(response.headers)
+        newHeaders.set('Access-Control-Allow-Origin', '*')
+        newHeaders.set('Cache-Control', 'public, max-age=31536000')
+        newHeaders.set('Access-Control-Allow-Methods', 'GET, OPTIONS')
+    
+        return new Response(response.body, {
+          status: response.status,
+          headers: newHeaders
+        })
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: {
+            "Content-Type": "application/json",
+            ...corsHeaders
+          }
+        })
+      }
+    }
 
     else { return new Response(htmlContent, { headers: { "Content-Type": "text/html"    }  });  }
   }
@@ -158,8 +248,9 @@ const htmlContent = `
 </head>
 <body>
     <div class="container" style="text-align: center;" >
-        <h2>Telegraph Image Hosting</h2>
-        <p>Free & Unlimited Image Hosting</p>
+        <h2>Pichub 文件图床</h2>
+        <p>Free & Unlimited Image(video) Hosting</p>
+        <p>原图,不压缩,大文件r2图床, 小文件telegraph</p>
         <hr>
         <div class="btn-wrapper">
             <span>Upload an Image</span>
@@ -169,7 +260,7 @@ const htmlContent = `
         <hr>
         <p>Thanks to <a style="color: springgreen;"  href="https://telegra.ph">Telegraph</a> & <a style="color: springgreen;"  href="https://cloudflare.com">Cloudflare</a></p>
         <p>GitHub: <a style="color: springgreen;"  href="https://github.com/goldeye0351/cf-tg-image">CF TG IMAGES </a></p>
-        <p>51xMI: <a style="color: springgreen;"  href="https://51xmi.com">51xMI.com </a></p>
+        <p>查看往期 <a style="color: springgreen;"  href="https://51xmi.com/pichub">51xMI.com </a></p>
 
     </div>
 
@@ -194,12 +285,21 @@ const htmlContent = `
             })
             .then(response => response.json())
             .then(data => {
-                const src = 'https://pichub.51xmi.com' + data[0].src;
-                uploadStatus.innerHTML = \`
-                    <img src="\${src}"  style="width: -webkit-fill-available; border-radius: 30px;" alt="Uploaded Image">
-                    <input type="text" id="imageUrl" value="\${src}">
-                    <button id="copy-btn" class='btn-wrapper'  type="button" onclick="copyImageUrl()" style="margin: 10px; border: 1px; ">Copy</button>
-                \`;
+                const src = data[0].src;
+                if (src.slice(-3) === 'mp4') {
+                  uploadStatus.innerHTML = \`
+                  <video width="320" height="240" controls> <source src="\${src}" type="video/mp4"> </video>
+                  <input type="text" id="imageUrl" value="\${src}">
+                <button id="copy-btn" class='btn-wrapper'  type="button" onclick="copyImageUrl()" style="margin: 10px; border: 1px; ">Copy</button>
+            \`;
+                }
+            else {
+              uploadStatus.innerHTML = \`
+                  <img src="\${src}"  style="width: -webkit-fill-available; border-radius: 30px;" alt="Uploaded Image">
+                  <input type="text" id="imageUrl" value="\${src}">
+                <button id="copy-btn" class='btn-wrapper'  type="button" onclick="copyImageUrl()" style="margin: 10px; border: 1px; ">Copy</button>
+            \`;
+            }
             })
             .catch(error => {
                 uploadStatus.innerHTML = '<div style="color: coral; font-size: larger;">Failed. 😓 </div>';
