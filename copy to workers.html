@@ -35,7 +35,7 @@ export default {
           const fileHandle = await env.R2.put(fName, file);
           imageUrl = `https://r2.${domain}/${fName}`; //这个换成你的r2的地址,如果也是r2就不用换
         } else {
-          // 文件小于 4MB，存储到 Telegraph 图床 //电报图床, 原来的公开的不能用了, 必须要botToken才能用了.
+          // 文件小于 4MB，存储到 Telegraph 图床
           const sendPhotoUrl = `https://api.telegram.org/bot${botToken}/sendPhoto`  
 
           const telegraPhFormData = new FormData();
@@ -48,17 +48,8 @@ export default {
           });
           const sendPhotoData = await telegraPhResponse.json();
           const fileId = sendPhotoData.result.photo[sendPhotoData.result.photo.length - 1].file_id
-          // 获取文件信息
-          const getFileUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`
-          const getFileResponse = await fetch(getFileUrl)
-          const getFileData = await getFileResponse.json()
-
-          if (!getFileData.ok) {
-              return new Response('Failed to get file info', { status: 400 })
-          }
-          // 2. 获取文件路径
-          const filePath = getFileData.result.file_path
-          imageUrl = `https://pichub.${domain}/`+filePath    //这个换成你的,如果也是pichub就不用换
+          // 直接使用 fileId 构建URL,不再获取 filePath
+          imageUrl = `https://pichub.${domain}/photos/${fileId}`  //这个换成你的,如果也是pichub就不用换 
          }
 
         // 保存到 D1 数据库
@@ -159,34 +150,45 @@ export default {
     else if (request.method === "GET" && url.pathname.startsWith("/photos")) {   // 电报图床显示  
 
       const pathParts = url.pathname.split('/')
-      const filePath = pathParts.slice(1).join('/') // 移除开头的斜杠，保留完整路径
-
-      const telegramUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`
-    
+      const fileId = pathParts[pathParts.length - 1] // 获取最后一部分作为 fileId
+      
       try {  // 添加错误处理
-        const response = await fetch(telegramUrl)
-        
-        if (!response.ok) {
+          // 1. 先获取文件信息
+          const getFileUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`
+          const getFileResponse = await fetch(getFileUrl)
+          const getFileData = await getFileResponse.json()
+
+          if (!getFileData.ok) {
+          throw new Error(`Failed to get file info: ${getFileData.description}`)
+          }
+
+          // 2. 获取最新的 filePath
+          const filePath = getFileData.result.file_path
+          const telegramUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`
+
+          const response = await fetch(telegramUrl)
+
+          if (!response.ok) {
           throw new Error(`Telegram API responded with status ${response.status}`)
-        }
-    
-        const newHeaders = new Headers(response.headers)
-        newHeaders.set('Access-Control-Allow-Origin', '*')
-        newHeaders.set('Cache-Control', 'public, max-age=31536000')
-        newHeaders.set('Access-Control-Allow-Methods', 'GET, OPTIONS')
-    
-        return new Response(response.body, {
+          }
+
+          const newHeaders = new Headers(response.headers)
+          newHeaders.set('Access-Control-Allow-Origin', '*')
+          newHeaders.set('Cache-Control', 'public, max-age=31536000')
+          newHeaders.set('Access-Control-Allow-Methods', 'GET, OPTIONS')
+
+          return new Response(response.body, {
           status: response.status,
           headers: newHeaders
-        })
+          })
       } catch (error) {
-        return new Response(JSON.stringify({ error: error.message }), {
-          status: 500,
-          headers: {
-            "Content-Type": "application/json",
-            ...corsHeaders
-          }
-        })
+          return new Response(JSON.stringify({ error: error.message }), {
+              status: 500,
+              headers: {
+                "Content-Type": "application/json",
+                ...corsHeaders
+              }
+            })
       }
     }
 
