@@ -1,325 +1,812 @@
-//  api upload  get   api post  + 网页 post
-var corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization"
+export default {
+    async fetch(request, env, ctx) {
+        const url = new URL(request.url);
+        // 1. 处理 CORS
+        if (request.method === "OPTIONS") {
+            return new Response(null, {
+                headers: {
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                },
+            });
+        }
+
+        // ⭐ 新增：返回前端上传页面 (根路由)
+        if (url.pathname === "/" && request.method === "GET") {
+            return handleUploadPage();
+        }
+
+        // ⭐ //这是原来的tg图床, 新的不行了, 原来的都支持
+        if (url.pathname.startsWith("/file")) {
+            return await handletelegraph(request, env);
+        }
+
+        // ⭐ 新增：返回隐藏的瀑布流图库页面
+        if (url.pathname === "/secret-gallery" && request.method === "GET") {
+            return handleGalleryPage();
+        }
+
+        // 2. 路由处理：文件上传 API (POST)
+        if (url.pathname === "/api/upload" && request.method === "POST") {
+            return await handleUpload(request, env);
+        }
+
+        // 3. 路由处理：获取图片列表 API (GET) 带分页
+        if (url.pathname === "/api/images" && request.method === "GET") {
+            return await handleListImages(request, env);
+        }
+
+        // ⭐ 新增：处理来自 Notion 的 Webhook 上传
+        if (url.pathname === "/x2r" && request.method === "POST") {
+            return await handleX2R(request, env);
+        }
+
+        // 4. 路由处理：获取/访问图片原图 (兜底的 GET 请求)
+        if (request.method === "GET" && url.pathname !== "/") {
+            return await handleGetImage(request, url.pathname.substring(1));
+        }
+
+        return new Response("Not Found", { status: 404 });
+    },
 };
 
+/**
+ * 辅助函数：计算 ArrayBuffer 的 SHA-256 哈希值
+ */
+async function computeSHA256(arrayBuffer) {
+    const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+}
 
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);  
-    const botToken = env.botToken
-    const chatId = env.chatId
-    const domain = env.domain
-    let targetURL = 'https://telegra.ph'; 
-
-    if (request.method === "OPTIONS") { return new Response(null, { headers: corsHeaders });  } 
-
-    else if (request.method === "POST" && url.pathname === "/upload") {
-      try {
-        const formData = await request.formData();
-        const file = formData.get('file');        
-        if (!file) {
-          throw new Error("No file uploaded");
-        }
-        const fileName = file.name;
-
-        // 判断文件大小
-        const fileSize = file.size;
-        let imageUrl;
-
-        if (fileSize > 4 * 1024 * 1024) {
-          // 文件大于 4MB，存储到 R2 图床  //如果没有R2 图床, 也可以都用电报的图床
-          const fName =`pichub/${fileName}/${Date.now()}/${fileName}`;//这几行是R2图床
-          const fileHandle = await env.R2.put(fName, file);
-          imageUrl = `https://r2.${domain}/${fName}`; //这个换成你的r2的地址,如果也是r2就不用换
-        } else {
-          // 文件小于 4MB，存储到 Telegraph 图床
-          const sendPhotoUrl = `https://api.telegram.org/bot${botToken}/sendPhoto`  
-
-          const telegraPhFormData = new FormData();
-                  telegraPhFormData.append('photo', file);
-                  telegraPhFormData.append('chat_id', chatId)
-
-          const telegraPhResponse = await fetch(sendPhotoUrl, { 
-            method: 'POST', 
-            body: telegraPhFormData 
-          });
-          const sendPhotoData = await telegraPhResponse.json();
-          const fileId = sendPhotoData.result.photo[sendPhotoData.result.photo.length - 1].file_id
-          // 直接使用 fileId 构建URL,不再获取 filePath
-          imageUrl = `https://pichub.${domain}/photos/${fileId}`  //这个换成你的,如果也是pichub就不用换 
-         }
-
-        // 保存到 D1 数据库
-        await env.myd1.prepare(`INSERT INTO pichub (url, fname, c_time) VALUES (?1, ?2, ?3)`).bind(imageUrl, fileName, Date.now()).run();  ////这个可以换成你的,如果表名一样不用换
-
-        return new Response(JSON.stringify([{src: imageUrl}]), {
-          headers: {
-            "Content-Type": "application/json",
-            ...corsHeaders
-          }
+/**
+ * 处理文件上传 (含哈希秒传/去重逻辑)
+ */
+async function handleUpload(request, env) {
+    // --- 安全鉴权 ---
+            const domain = env.DOMAIN
+    const authHeader = request.headers.get("Authorization");
+    if (!authHeader || authHeader !== env.APIKEY) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" }
         });
-      } catch (error) {
-        return new Response(JSON.stringify({ error: error.message }), {
-          status: 500,
-          headers: {
-            "Content-Type": "application/json",
-            ...corsHeaders
-          }
-        });
-      }
-    } 
-
-    else if (request.url.startsWith('https://pichub.51xmi.com/file')) { //这是原来的tg图床, 新的不行了, 原来的都支持
-      targetURL = 'https://telegra.ph';
-      const newRequest = new Request(targetURL + new URL(request.url).pathname, request);
-      newRequest.headers.delete('Host');
-      newRequest.headers.delete('Referer');
-      const response = await fetch(newRequest);
-      const headers = new Headers(response.headers);    // 添加 CORS 标头
-      headers.set('Access-Control-Allow-Origin', '*'); // 只允许自己的跨域, 全部请用 '*'
-      headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      headers.set('Access-Control-Allow-Headers', 'Content-Type');
-  
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: headers
-      });
-    } 
-
-    else if (request.method === "GET" && url.pathname === "/api") {   //获取以往所的有图
-      const headers = request.headers;
-      const authorization = headers.get("Authorization");
-      if (!authorization || authorization !== `Bearer ${env.APIKEY}`) {    return fetch("https://http.cat/401")  }  //不想认证,可以删除这
-
-      const result = await env.myd1.prepare("SELECT * FROM pichub ORDER BY id DESC").all();    //换成你的 ,如果表名一样就不用换
-      if (result?.success && result.results) {
-        return new Response(JSON.stringify({
-          data: result.results
-        }), {
-          headers: {
-            "content-type": "application/json;charset=UTF-8",
-            ...corsHeaders
-          }
-        });
-      } else {
-        return new Response(JSON.stringify({
-          data: "fail"
-        }), {
-          headers: {
-            "content-type": "application/json;charset=UTF-8",
-            ...corsHeaders
-          }
-        });
-      }
-    }  
-
-    else if (request.method === "POST" && url.pathname === "/api") {   //通过api上传,别的worker调用
-      const headers = request.headers;
-      const body = await request.json();
-      const fname = body.fname;
-      const url = body.url;      
-      const authorization = headers.get("Authorization");  //不想要可以删这两行
-      if (!authorization || authorization !== `Bearer ${env.APIKEY}`) {    return fetch("https://http.cat/401")  } //不想要可以删这两行
-
-      const result = await env.myd1.prepare(`INSERT INTO pichub (url, fname, c_time) VALUES (?1, ?2, ?3)`).bind(url, fname, Date.now()).run(); //换成你的,如果表名列名一样就不用换
-      if (result?.success && result.results) {
-        return new Response(JSON.stringify({
-          data: result
-        }), {
-          headers: {
-            "content-type": "application/json;charset=UTF-8",
-            ...corsHeaders
-          }
-        });
-      } else {
-        return new Response(JSON.stringify({
-          data: "fail"
-        }), {
-          headers: {
-            "content-type": "application/json;charset=UTF-8",
-            ...corsHeaders
-          }
-        });
-      }
-    }  
-
-    else if (request.method === "GET" && url.pathname.startsWith("/photos")) {   // 电报图床显示  
-
-      const pathParts = url.pathname.split('/')
-      const fileId = pathParts[pathParts.length - 1] // 获取最后一部分作为 fileId
-      
-      try {  // 添加错误处理
-          // 1. 先获取文件信息
-          const getFileUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`
-          const getFileResponse = await fetch(getFileUrl)
-          const getFileData = await getFileResponse.json()
-
-          if (!getFileData.ok) {
-          throw new Error(`Failed to get file info: ${getFileData.description}`)
-          }
-
-          // 2. 获取最新的 filePath
-          const filePath = getFileData.result.file_path
-          const telegramUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`
-
-          const response = await fetch(telegramUrl)
-
-          if (!response.ok) {
-          throw new Error(`Telegram API responded with status ${response.status}`)
-          }
-
-          const newHeaders = new Headers(response.headers)
-          newHeaders.set('Access-Control-Allow-Origin', '*')
-          newHeaders.set('Cache-Control', 'public, max-age=31536000')
-          newHeaders.set('Access-Control-Allow-Methods', 'GET, OPTIONS')
-
-          return new Response(response.body, {
-          status: response.status,
-          headers: newHeaders
-          })
-      } catch (error) {
-          return new Response(JSON.stringify({ error: error.message }), {
-              status: 500,
-              headers: {
-                "Content-Type": "application/json",
-                ...corsHeaders
-              }
-            })
-      }
     }
 
-    else { return new Response(htmlContent, { headers: { "Content-Type": "text/html"    }  });  }
-  }
-};
+    try {
+        const formData = await request.formData();
+        const file = formData.get("file");
 
-const htmlContent = `
+        if (!file || !(file instanceof File)) {
+            return new Response(JSON.stringify({ error: "No file uploaded" }), { status: 400 });
+        }
+
+        // --- 核心改动：读取文件内容并计算 SHA-256 哈希值 ---
+        const arrayBuffer = await file.arrayBuffer();
+        const fileHash = await computeSHA256(arrayBuffer);
+
+        // --- 数据库查重 (秒传逻辑) ---
+        const existingRecord = await env.myd1.prepare(
+            `SELECT stored_name, original_name FROM images WHERE file_hash = ? LIMIT 1`
+        )
+            .bind(fileHash)
+            .first();
+
+        // 如果数据库里已经存在相同哈希的文件，直接返回已有文件的 URL，不上传 R2
+        if (existingRecord) {
+            const fileUrl = `${domain}/${existingRecord.stored_name}`;
+            const optimizedUrl = `${domain}/cdn-cgi/image/format=auto/${existingRecord.stored_name}`;
+
+            return new Response(
+                JSON.stringify({
+                    success: true,
+                    url: fileUrl,
+                    optimizedUrl: optimizedUrl,
+                    originalName: file.name, // 依然向前端返回当前上传的文件名
+                    storedName: existingRecord.stored_name,
+                    hitCache: true // 标记：命中重复，走的是哈希去重
+                }),
+                {
+                    status: 200,
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Access-Control-Allow-Origin": "*",
+                    },
+                }
+            );
+        }
+
+        // --- 如果是全新文件，生成 SEO 友好的虚拟目录存储路径 ---
+        const rawName = file.name;
+        const lastDotIndex = rawName.lastIndexOf(".");
+        const nameWithoutExt = lastDotIndex !== -1 ? rawName.substring(0, lastDotIndex) : rawName;
+        const extension = lastDotIndex !== -1 ? rawName.substring(lastDotIndex) : "";
+
+        // 净化文件名
+        const safeSeoName = nameWithoutExt
+            .toLowerCase()
+            .replace(/\s+/g, '-')
+            .replace(/[^a-z0-9\-\u4e00-\u9fa5]/g, '');
+
+        const finalSeoName = safeSeoName || 'image';
+
+        // 生成独一无二的虚拟目录
+        const fullUuid = crypto.randomUUID();
+        const shortUuid = fullUuid.split('-')[0];
+        const storedName = `${shortUuid}/${finalSeoName}${extension}`;
+
+        // --- 写入 R2 存储 ---
+        // 刚才计算哈希时文件已读入内存(arrayBuffer)，这里直接将 arrayBuffer 写入 R2
+        await env.myr2.put(storedName, arrayBuffer, {
+            httpMetadata: {
+                contentType: file.type || "application/octet-stream",
+            },
+            customMetadata: {
+                originalName: rawName,
+                fileHash: fileHash
+            },
+        });
+
+        // --- 写入 D1 索引数据库 (包含哈希值) ---
+        await env.myd1.prepare(
+            `INSERT INTO images (id, original_name, stored_name, size, mime_type, file_hash) VALUES (?, ?, ?, ?, ?, ?)`
+        )
+            .bind(fullUuid, rawName, storedName, file.size, file.type, fileHash)
+            .run();
+
+        // --- 返回成功结果 (写死您要求的域名) ---
+        const fileUrl = `${domain}/${storedName}`;
+        const optimizedUrl = `${domain}/cdn-cgi/image/format=auto/${storedName}`;
+
+        return new Response(
+            JSON.stringify({
+                success: true,
+                url: fileUrl,
+                optimizedUrl: optimizedUrl,
+                originalName: rawName,
+                storedName: storedName,
+                hitCache: false
+            }),
+            {
+                status: 200,
+                headers: {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*",
+                },
+            }
+        );
+    } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" }
+        });
+    }
+}
+
+/**
+ * 处理图片读取
+ */
+async function handleGetImage(filename, env) {
+    const decodedFilename = decodeURI(filename);
+    const object = await env.myr2.get(decodedFilename);
+
+    if (object === null) {
+        return new Response("Image Not Found", { status: 404 });
+    }
+
+    const headers = new Headers();
+    object.writeHttpMetadata(headers);
+    headers.set("etag", object.httpEtag);
+    headers.set("Access-Control-Allow-Origin", "*");
+    headers.set("Cache-Control", "public, max-age=31536000, immutable");
+
+    return new Response(object.body, { headers });
+}
+
+/**
+ * 处理获取图片列表 (带分页)
+ */
+async function handleListImages(request, env) {
+            const domain = env.DOMAIN
+    // --- 1. 安全鉴权 (和上传接口一样，保护公司数据) ---
+    const authHeader = request.headers.get("Authorization");
+    if (!authHeader || authHeader !== env.APIKEY) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" }
+        });
+    }
+
+    try {
+        const url = new URL(request.url);
+
+        // --- 2. 解析分页参数 ---
+        // 默认获取第 1 页，每页 20 条数据
+        const page = Math.max(1, parseInt(url.searchParams.get("page")) || 1);
+        // 限制每页最多 100 条，防止恶意请求把数据库拉崩
+        const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit")) || 20));
+        // 计算 SQL 的偏移量
+        const offset = (page - 1) * limit;
+
+        // --- 3. 查询总记录数 (为了前端能显示总页数) ---
+        const countQuery = await env.myd1.prepare(`SELECT COUNT(*) as total FROM images`).first();
+        const total = countQuery ? countQuery.total : 0;
+
+        // --- 4. 查询当前页的数据 (按上传时间倒序排列，最新的在前面) ---
+        const { results } = await env.myd1.prepare(
+            `SELECT id, original_name, stored_name, size, mime_type, upload_time 
+       FROM images 
+       ORDER BY upload_time DESC 
+       LIMIT ? OFFSET ?`
+        )
+            .bind(limit, offset)
+            .all();
+
+        // --- 5. 组装返回数据 (顺手帮你把优化后的 CDN 链接也拼进去) ---
+        const formattedData = results.map(item => ({
+            id: item.id,
+            originalName: item.original_name,
+            storedName: item.stored_name,
+            size: item.size,
+            mimeType: item.mime_type,
+            uploadTime: item.upload_time,
+            rawUrl: `${domain}/${item.stored_name}`,
+            // 结合上一轮的优化，直接返回自带 auto format 的生产环境链接
+            optimizedUrl: `${domain}/cdn-cgi/image/format=auto/${item.stored_name}`
+        }));
+
+        // --- 6. 返回标准化的 JSON 结构 ---
+        return new Response(
+            JSON.stringify({
+                success: true,
+                data: formattedData,
+                pagination: {
+                    total: total,
+                    page: page,
+                    limit: limit,
+                    totalPages: Math.ceil(total / limit) // 自动计算总页数
+                }
+            }),
+            {
+                status: 200,
+                headers: {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*",
+                },
+            }
+        );
+    } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" }
+        });
+    }
+}
+
+
+function handleUploadPage() {
+    const html = `
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta property="og:title" content="免费图床" />
-    <meta property="og:image" content="https://51xmi.com/favicon.ico" />
-
-    <link rel="icon" href="https://51xmi.com/favicon.ico">
-    <title>免费图床</title>
+    <meta property="og:title" content="nexteek专用图床" />
+    <meta property="og:image" content="https://nexteek.com/nexteek.jpg" />
+    <link rel="icon" href="https://nexteek.com/favicon.ico">
+    <title>最简图床 - 上传</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
+            font-family: system-ui, -apple-system, sans-serif;
             background-color: #000000;
-            color:white;
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
         }
-
         .container {
-          max-width: 380px;
-          background-color: #111111;    
-          margin: 100px auto;
-          padding: 50px;
-          border-radius: 30px;
-          box-shadow: 0 0 15px rgb(0, 255, 0);  
+            max-width: 400px;
+            width: 100%;
+            background-color: #111111;
+            padding: 40px 30px;
+            border-radius: 30px;
+            box-shadow: 0 0 20px rgb(0, 255, 0);
+            box-sizing: border-box;
         }
-
-        .btn-wrapper {
-            position: relative;                
-            overflow: hidden;
-            display: inline-block;
+        h2 {
+            margin-top: 0;
+            color: #ffffff;
+            text-align: center;
+            font-size: 1.5rem;
+            margin-bottom: 5px;
+        }
+        .subtitle {
+            font-size: 0.85rem;
+            color: #888;
+            text-align: center;
+            margin-bottom: 25px;
+        }
+        .input-group {
+            margin-bottom: 1.5rem;
+        }
+        label {
+            display: block;
+            font-size: 0.85rem;
+            color: #bbbbbb;
+            margin-bottom: 0.5rem;
+        }
+        input[type="password"] {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #333333;
+            background-color: #222222;
+            color: white;
+            border-radius: 8px;
+            box-sizing: border-box;
+            outline: none;
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
+        input[type="password"]:focus {
+            border-color: springgreen;
+            box-shadow: 0 0 8px rgba(0, 255, 0, 0.4);
+        }
+        .upload-area {
+            border: 2px dashed #333333;
+            border-radius: 12px;
+            padding: 2.5rem 1rem;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.3s, box-shadow 0.3s;
+            margin-bottom: 1.5rem;
+            background-color: #1a1a1a;
+        }
+        .upload-area:hover {
+            border-color: springgreen;
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.2);
+        }
+        .upload-area p {
+            margin: 0;
+            color: #888888;
+            font-size: 0.9rem;
+        }
+        input[type="file"] {
+            display: none;
+        }
+        .result {
+            display: none;
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid #222222;
+            text-align: center;
+        }
+        .result img, .result video {
+            max-width: 100%;
+            border-radius: 12px;
+            margin-bottom: 0.75rem;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+        .output-wrapper {
+            position: relative;
+            display: flex;
+            gap: 10px;
+            margin-top: 0.5rem;
+        }
+        input[type="text"] {
+            flex: 1;
+            padding: 0.6rem;
+            border: 1px solid #333333;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            color: #dddddd;
+            background: #1e1e1e;
+            cursor: pointer;
+            outline: none;
+        }
+        .copy-btn {
+            padding: 0.6rem 1rem;
+            border: none;
+            border-radius: 8px;
             background-color: #007BFF;
             color: #FFF;
-            border-radius: 10px;
-            padding: 10px 25px;
+            font-size: 0.8rem;
             cursor: pointer;
             transition: background-color 0.3s;
+            white-space: nowrap;
         }
-
-        .btn-wrapper:hover {
+        .copy-btn:hover {
             background-color: #0056b3;
         }
-
-        .btn-wrapper input[type=file] {
-            font-size: 100px;
-            position: absolute;
-            left: 0;
-            top: 0;
-            opacity: 0;
+        .loading {
+            display: none;
+            text-align: center;
+            color: springgreen;
+            font-size: 0.9rem;
+            margin-top: 1.5rem;
+        }
+        hr {
+            border: 0;
+            height: 1px;
+            background: #222222;
+            margin: 20px 0;
+        }
+        .footer-info {
+            text-align: center;
+            font-size: 0.8rem;
+            color: #666;
+        }
+        .footer-info a {
+            color: springgreen;
+            text-decoration: none;
+        }
+        .footer-info a:hover {
+            text-decoration: underline;
         }
     </style>
 </head>
 <body>
-    <div class="container" style="text-align: center;" >
-        <h2>Pichub 文件图床</h2>
-        <p>Free & Unlimited Image(video) Hosting</p>
-        <p>原图,不压缩,大文件r2图床, 小文件telegraph</p>
-        <hr>
-        <div class="btn-wrapper">
-            <span>Upload an Image</span>
-            <input type="file" name="file" id="fileInput" accept="image/*, video/*" data-umami-event="pichub图床统计">
+    <div class="container">
+        <h2>图床上传</h2>
+        <div class="subtitle">最简图床,专用图片 & 视频托管服务,哈希防重</div>
+        <div class="input-group">
+            <label>API Key</label>
+            <input type="password" id="apiKey" placeholder="输入 API Key" />
         </div>
-        <div id="uploadStatus" style="margin-top: 20px;"></div>
+        <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+            <p id="uploadText">点击选择图片或视频，或拖拽到此处</p>
+            <input type="file" id="fileInput" accept="image/*, video/*" onchange="handleFile(this.files[0])">
+        </div>
+        <div class="loading" id="loading">正在上传，请稍候...</div>
+        <div class="result" id="result">
+            <div id="previewContainer"></div>
+            <div class="output-wrapper">
+                <input type="text" id="urlOutput" readonly onclick="copyUrl()" title="点击复制链接">
+                <button id="copyBtn" class="copy-btn" onclick="copyUrl()">Copy</button>
+            </div>
+            <p style="font-size: 12px; color: #10b981; margin-top: 8px; display: none;" id="copyTip">已复制到剪贴板！</p>
+        </div>
         <hr>
-        <p>Thanks to <a style="color: springgreen;"  href="https://telegra.ph">Telegraph</a> & <a style="color: springgreen;"  href="https://cloudflare.com">Cloudflare</a></p>
-        <p>GitHub: <a style="color: springgreen;"  href="https://github.com/goldeye0351/cf-tg-image">CF TG IMAGES </a></p>
-        <p>查看往期 <a style="color: springgreen;"  href="https://51xmi.com/pichub">51xMI.com </a></p>
-
+        <div class="footer-info">
+            <p>Thanks to Cloudflare R2 & D1</p>
+            <p>查看媒体库 <a href="/secret-gallery">媒体库</a></p>
+        </div>
     </div>
 
     <script>
-        const fileInput = document.getElementById('fileInput');
-        const uploadStatus = document.getElementById('uploadStatus');
+        // 页面加载时恢复保存的 API Key
+        document.getElementById('apiKey').value = localStorage.getItem('img_api_key') || '';
 
-        fileInput.addEventListener('change', function() {
-            const file = fileInput.files[0];
-            if (file) {
-                uploadImage(file);
-            }
-        });
+        async function handleFile(file) {
+            if (!file) return;
+            const apiKey = document.getElementById('apiKey').value;
+            if (!apiKey) return alert('请先输入 API Key');
+            
+            // 保存 Key 方便下次使用
+            localStorage.setItem('img_api_key', apiKey);
+            
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('result').style.display = 'none';
+            document.getElementById('uploadText').innerText = file.name;
 
-        function uploadImage(file) {
             const formData = new FormData();
             formData.append('file', file);
 
-            fetch('/upload', {  
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                const src = data[0].src;
-                if (src.slice(-3) === 'mp4') {
-                  uploadStatus.innerHTML = \`
-                  <video width="320" height="240" controls> <source src="\${src}" type="video/mp4"> </video>
-                  <input type="text" id="imageUrl" value="\${src}">
-                <button id="copy-btn" class='btn-wrapper'  type="button" onclick="copyImageUrl()" style="margin: 10px; border: 1px; ">Copy</button>
-            \`;
+            try {
+                const res = await fetch('/api/upload', {
+                    method: 'POST',
+                    headers: { 'Authorization': apiKey },
+                    body: formData
+                });
+                
+                const data = await res.json();
+                document.getElementById('loading').style.display = 'none';
+
+                if (data.success) {
+                    document.getElementById('result').style.display = 'block';
+                    const finalUrl = data.optimizedUrl || data.url || data.rawUrl;
+                    
+                    const previewContainer = document.getElementById('previewContainer');
+                    const isVideo = file.type.startsWith('video/') || file.name.endsWith('.mp4');
+                    
+                    if (isVideo) {
+                        previewContainer.innerHTML = '<video src="' + finalUrl + '" controls style="width: 100%; max-height: 240px;"></video>';
+                    } else {
+                        previewContainer.innerHTML = '<img src="' + finalUrl + '" alt="Preview" style="width: 100%;">';
+                    }
+                    
+                    document.getElementById('urlOutput').value = finalUrl;
+                } else {
+                    alert('上传失败: ' + data.error);
+                    document.getElementById('uploadText').innerText = '点击选择图片或视频，或拖拽到此处';
                 }
-            else {
-              uploadStatus.innerHTML = \`
-                  <img src="\${src}"  style="width: -webkit-fill-available; border-radius: 30px;" alt="Uploaded Image">
-                  <input type="text" id="imageUrl" value="\${src}">
-                <button id="copy-btn" class='btn-wrapper'  type="button" onclick="copyImageUrl()" style="margin: 10px; border: 1px; ">Copy</button>
-            \`;
+            } catch (err) {
+                alert('网络错误');
+                document.getElementById('loading').style.display = 'none';
             }
-            })
-            .catch(error => {
-                uploadStatus.innerHTML = '<div style="color: coral; font-size: larger;">Failed. 😓 </div>';
-            });
         }
 
-        function copyImageUrl() {
-            const imageUrl = document.getElementById('imageUrl');
-            imageUrl.select();
+        function copyUrl() {
+            const copyText = document.getElementById('urlOutput');
+            copyText.select();
             document.execCommand('copy');
-            document.getElementById('copy-btn').innerHTML= "Copied ✨";
-            setTimeout(() => {
-                document.getElementById('copy-btn').innerHTML = "Copy";
-            }, 1000);
+            
+            const copyBtn = document.getElementById('copyBtn');
+            copyBtn.innerHTML = "Copied ✨";
+            document.getElementById('copyTip').style.display = 'block';
+            
+            setTimeout(() => { 
+                copyBtn.innerHTML = "Copy";
+                document.getElementById('copyTip').style.display = 'none'; 
+            }, 2000);
         }
     </script>
-    <script defer src="https://umami.51xmi.com/script.js" data-website-id="6a873ef2-259b-4e69-a63c-1306d6695bd2">
-    <\/script>
 </body>
 </html>
-`;
+  `;
+    return new Response(html, {
+        headers: { "Content-Type": "text/html;charset=UTF-8" },
+    });
+}
+
+
+/**
+ * 返回前端：隐藏的瀑布流图库
+ */
+function handleGalleryPage() {
+    const html = `
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>图床 - 媒体库</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background-color: #111827; color: #f9fafb; margin: 0; padding: 20px; }
+        .header { max-width: 1200px; margin: 0 auto 20px auto; display: flex; justify-content: space-between; align-items: center; }
+        .header h2 { margin: 0; }
+        .auth-bar { display: flex; gap: 10px; }
+        input[type="password"] { padding: 8px 12px; border: none; border-radius: 6px; background: #374151; color: white; outline: none; }
+        button { padding: 8px 16px; border: none; border-radius: 6px; background: #3b82f6; color: white; cursor: pointer; }
+        button:hover { background: #2563eb; }
+        
+        /* 核心：纯 CSS 瀑布流 */
+        .masonry {
+            max-width: 1200px;
+            margin: 0 auto;
+            column-count: 4; /* 默认4列 */
+            column-gap: 16px;
+        }
+        .masonry-item {
+            break-inside: avoid;
+            margin-bottom: 16px;
+            background: #1f2937;
+            border-radius: 8px;
+            overflow: hidden;
+            position: relative;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .masonry-item:hover { transform: translateY(-4px); }
+        .masonry-item img {
+            width: 100%;
+            display: block;
+        }
+        .item-info {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            background: rgba(0,0,0,0.7);
+            padding: 8px;
+            font-size: 12px;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .masonry-item:hover .item-info { opacity: 1; }
+        
+        /* 响应式列数 */
+        @media (max-width: 1024px) { .masonry { column-count: 3; } }
+        @media (max-width: 768px) { .masonry { column-count: 2; } }
+        @media (max-width: 480px) { .masonry { column-count: 1; } }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>媒体库</h2>
+        <div class="auth-bar">
+            <input type="password" id="apiKey" placeholder="输入 API Key 加载">
+            <button onclick="loadImages()">加载图片</button>
+        </div>
+    </div>
+    
+    <div class="masonry" id="gallery">
+        </div>
+
+    <script>
+        // 自动读取之前上传时可能存下的 Key
+        document.getElementById('apiKey').value = localStorage.getItem('img_api_key') || '';
+
+        async function loadImages() {
+            const apiKey = document.getElementById('apiKey').value;
+            if (!apiKey) return alert('请先输入 API Key');
+            localStorage.setItem('img_api_key', apiKey);
+            
+            const gallery = document.getElementById('gallery');
+            gallery.innerHTML = '<p style="text-align:center; width:100%;">加载中...</p>';
+
+            try {
+                // 默认拉取最新的 50 张图
+                const res = await fetch('/api/images?limit=50', {
+                    headers: { 'Authorization': apiKey }
+                });
+                const data = await res.json();
+
+                if (!data.success) {
+                    return gallery.innerHTML = '<p style="color:red;">加载失败: ' + data.error + '</p>';
+                }
+
+                gallery.innerHTML = '';
+                data.data.forEach(item => {
+                    const finalUrl = item.optimizedUrl || item.rawUrl;
+                    const div = document.createElement('div');
+                    div.className = 'masonry-item';
+                    // 点击整个卡片复制链接
+                    div.onclick = () => {
+                        navigator.clipboard.writeText(finalUrl);
+                        alert('图片链接已复制！');
+                    };
+                    
+                    // 使用 loading="lazy" 实现前端的按需加载，节省流量
+                    div.innerHTML = \`
+                        <img src="\${finalUrl}" loading="lazy" alt="\${item.originalName}">
+                        <div class="item-info">
+                            \${item.originalName}<br>
+                            \${(item.size / 1024).toFixed(1)} KB
+                        </div>
+                    \`;
+                    gallery.appendChild(div);
+                });
+
+                if (data.data.length === 0) {
+                    gallery.innerHTML = '<p>还没有上传过图片哦</p>';
+                }
+
+            } catch (err) {
+                gallery.innerHTML = '<p>网络错误或无权限</p>';
+            }
+        }
+
+        // 如果有 Key，自动加载
+        if (document.getElementById('apiKey').value) {
+            loadImages();
+        }
+    </script>
+</body>
+</html>
+  `;
+    return new Response(html, {
+        headers: { "Content-Type": "text/html;charset=UTF-8" },
+    });
+}
+
+/**
+ * 新增： 这是把x的图片转为图床中, 主要是因为国内访问不了x. 处理 x2r Notion Webhook 上传 (保存为原始文件名，不改变文件名且不进行秒传去重)
+ */
+async function handleX2R(request, env) {
+            const domain = env.DOMAIN
+    const headers = request.headers;
+    const authorization = headers.get("Authorization");
+    if (!authorization || authorization !== env.APIKEY) {
+        return new Response("Unauthorized", { status: 401 });
+    }
+
+    try {
+        // 解析来自 Notion 的 JSON 数据
+        const body = await request.json();
+        // 根据 Notion Webhook 的数据结构提取嵌套的图片链接
+        const picurl = body?.data?.properties?.URL_Pic?.url;
+
+        if (!picurl) {
+            return new Response('Missing picurl in request body', { status: 400 });
+        }
+
+        // 从 URL 中提取原始文件名
+        const picUrlObj = new URL(picurl);
+        const pathname = picUrlObj.pathname;
+        const filename = decodeURIComponent(pathname.split('/').pop()) || `notion_image_${Date.now()}.jpg`;
+
+        // 获取图片数据
+        const imageResponse = await fetch(picurl);
+
+        if (!imageResponse.ok) {
+            return new Response(`Failed to fetch image from URL: ${imageResponse.statusText}`, { status: 500 });
+        }
+
+        // 将图片读为 ArrayBuffer
+        const imageBuffer = await imageResponse.arrayBuffer();
+
+        // 计算 SHA-256 哈希值
+        const fileHash = await computeSHA256(imageBuffer);
+
+        // 构建 R2 的存储路径，固定为 x2r2 文件夹 + 原始文件名，不加随机 UUID 前缀
+        const storedName = `x2r2/${filename}`;
+
+        // 检查 R2 Bucket 绑定是否配置
+        if (!env.myr2) {
+            return new Response('R2 bucket binding (myr2) is not configured in worker', { status: 500 });
+        }
+
+        const mimeType = imageResponse.headers.get('content-type') || 'application/octet-stream';
+
+        // --- 写入 R2 存储 ---
+        await env.myr2.put(storedName, imageBuffer, {
+            httpMetadata: {
+                contentType: mimeType,
+            },
+            customMetadata: {
+                originalName: filename,
+                fileHash: fileHash
+            },
+        });
+
+        // 生成独一无二的 ID 用于主键
+        const fullUuid = crypto.randomUUID();
+
+        // --- 写入 D1 索引数据库 (images 表) ---
+        // 使用 INSERT OR REPLACE 避免 stored_name 唯一索引冲突
+        await env.myd1.prepare(
+            `INSERT OR REPLACE INTO images (id, original_name, stored_name, size, mime_type, file_hash) VALUES (?, ?, ?, ?, ?, ?)`
+        )
+            .bind(fullUuid, filename, storedName, imageBuffer.byteLength, mimeType, fileHash)
+            .run();
+
+        const fileUrl = `${domain}/${storedName}`;
+        const optimizedUrl = `${domain}/cdn-cgi/image/format=auto/${storedName}`;
+
+        // 返回成功响应
+        return new Response(JSON.stringify({
+            success: true,
+            url: fileUrl,
+            optimizedUrl: optimizedUrl,
+            originalName: filename,
+            storedName: storedName,
+            hitCache: false
+        }), {
+            status: 200,
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            }
+        });
+    } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), {
+            status: 500,
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            }
+        });
+    }
+}
+
+
+/**
+ * 这是原来的tg图床, 新的不行了, 原来的都支持
+ */
+async function handletelegraph(request, env) {
+            const targetURL = 'https://telegra.ph';
+            const newRequest = new Request(targetURL + new URL(request.url).pathname, request);
+            newRequest.headers.delete('Host');
+            newRequest.headers.delete('Referer');
+            const response = await fetch(newRequest);
+            const headers = new Headers(response.headers);    // 添加 CORS 标头
+            headers.set('Access-Control-Allow-Origin', '*'); // 只允许自己的跨域, 全部请用 '*'
+            headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+            headers.set('Access-Control-Allow-Headers', 'Content-Type');
+
+            return new Response(response.body, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: headers
+            });
+}
