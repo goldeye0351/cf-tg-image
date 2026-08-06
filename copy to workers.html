@@ -68,17 +68,22 @@ async function computeSHA256(arrayBuffer) {
  */
 async function initDatabase(env) {
     if (!env.myd1) return;
-    await env.myd1.prepare(`
-        CREATE TABLE IF NOT EXISTS images (
-            id TEXT PRIMARY KEY,
-            original_name TEXT,
-            stored_name TEXT UNIQUE,
-            size INTEGER,
-            mime_type TEXT,
-            file_hash TEXT,
-            upload_time DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-    `).run();
+    await env.myd1.batch([
+        env.myd1.prepare(`
+            CREATE TABLE IF NOT EXISTS images (
+                id TEXT PRIMARY KEY,
+                original_name TEXT,
+                stored_name TEXT UNIQUE,
+                size INTEGER,
+                mime_type TEXT,
+                file_hash TEXT,
+                upload_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        `),
+        env.myd1.prepare(`
+            CREATE INDEX IF NOT EXISTS idx_images_hash ON images(file_hash);
+        `)
+    ]);
 }
 
 /**
