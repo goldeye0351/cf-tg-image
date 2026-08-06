@@ -12,7 +12,7 @@ export default {
             });
         }
 
-        // ⭐ 新增：返回前端上传页面 (根路由)
+        // ⭐ 返回前端上传页面 (根路由)
         if (url.pathname === "/" && request.method === "GET") {
             return handleUploadPage();
         }
@@ -22,29 +22,29 @@ export default {
             return await handletelegraph(request, env);
         }
 
-        // ⭐ 新增：返回隐藏的瀑布流图库页面
+        // ⭐ 返回隐藏的瀑布流图库页面
         if (url.pathname === "/secret-gallery" && request.method === "GET") {
             return handleGalleryPage();
         }
 
-        // 2. 路由处理：文件上传 API (POST)
+        //  路由处理：文件上传 API (POST)
         if (url.pathname === "/api/upload" && request.method === "POST") {
             return await handleUpload(request, env);
         }
 
-        // 3. 路由处理：获取图片列表 API (GET) 带分页
+        // 路由处理：获取图片列表 API (GET) 带分页
         if (url.pathname === "/api/images" && request.method === "GET") {
             return await handleListImages(request, env);
         }
 
-        // ⭐ 新增：处理来自 Notion 的 Webhook 上传
+        // ⭐ 处理来自 Notion 的 Webhook 上传
         if (url.pathname === "/x2r" && request.method === "POST") {
             return await handleX2R(request, env);
         }
 
-        // 4. 路由处理：获取/访问图片原图 (兜底的 GET 请求)
+        // 路由处理：获取/访问图片原图 (兜底的 GET 请求)
         if (request.method === "GET" && url.pathname !== "/") {
-            return await handleGetImage(request, url.pathname.substring(1));
+            return await handleGetImage(url.pathname.substring(1), env);
         }
 
         return new Response("Not Found", { status: 404 });
@@ -61,11 +61,32 @@ async function computeSHA256(arrayBuffer) {
 }
 
 /**
+ * 自动检查并创建 D1 数据库中的 images 表 (免 SQL 手动建表)
+ * 💡 提示：如果已经在 D1 数据库中通过 SQL 手动建好了 images 表，
+ *    可以在下面的 handleUpload / handleListImages / handleX2R 函数中，
+ *    找到 `await initDatabase(env);` 并将其注释掉（例如 `// await initDatabase(env);`），以获得微小的性能提升。
+ */
+async function initDatabase(env) {
+    if (!env.myd1) return;
+    await env.myd1.prepare(`
+        CREATE TABLE IF NOT EXISTS images (
+            id TEXT PRIMARY KEY,
+            original_name TEXT,
+            stored_name TEXT UNIQUE,
+            size INTEGER,
+            mime_type TEXT,
+            file_hash TEXT,
+            upload_time DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    `).run();
+}
+
+/**
  * 处理文件上传 (含哈希秒传/去重逻辑)
  */
 async function handleUpload(request, env) {
     // --- 安全鉴权 ---
-            const domain = env.DOMAIN
+    const domain = env.DOMAIN
     const authHeader = request.headers.get("Authorization");
     if (!authHeader || authHeader !== env.APIKEY) {
         return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -85,6 +106,10 @@ async function handleUpload(request, env) {
         // --- 核心改动：读取文件内容并计算 SHA-256 哈希值 ---
         const arrayBuffer = await file.arrayBuffer();
         const fileHash = await computeSHA256(arrayBuffer);
+
+        // --- 自动检测并创建数据库表（新手免 SQL 建表） ---
+        // 💡 如果在 D1 数据库中已手动建好 images 表，可注释掉下面这行代码：
+        await initDatabase(env);
 
         // --- 数据库查重 (秒传逻辑) ---
         const existingRecord = await env.myd1.prepare(
@@ -208,7 +233,7 @@ async function handleGetImage(filename, env) {
  * 处理获取图片列表 (带分页)
  */
 async function handleListImages(request, env) {
-            const domain = env.DOMAIN
+    const domain = env.DOMAIN
     // --- 1. 安全鉴权 (和上传接口一样，保护公司数据) ---
     const authHeader = request.headers.get("Authorization");
     if (!authHeader || authHeader !== env.APIKEY) {
@@ -228,6 +253,10 @@ async function handleListImages(request, env) {
         const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit")) || 20));
         // 计算 SQL 的偏移量
         const offset = (page - 1) * limit;
+
+        // --- 自动检测并创建数据库表（新手免 SQL 建表） ---
+        // 💡 如果在 D1 数据库中已手动建好 images 表，可注释掉下面这行代码：
+        await initDatabase(env);
 
         // --- 3. 查询总记录数 (为了前端能显示总页数) ---
         const countQuery = await env.myd1.prepare(`SELECT COUNT(*) as total FROM images`).first();
@@ -693,7 +722,7 @@ function handleGalleryPage() {
  * 新增： 这是把x的图片转为图床中, 主要是因为国内访问不了x. 处理 x2r Notion Webhook 上传 (保存为原始文件名，不改变文件名且不进行秒传去重)
  */
 async function handleX2R(request, env) {
-            const domain = env.DOMAIN
+    const domain = env.DOMAIN
     const headers = request.headers;
     const authorization = headers.get("Authorization");
     if (!authorization || authorization !== env.APIKEY) {
@@ -752,6 +781,10 @@ async function handleX2R(request, env) {
         // 生成独一无二的 ID 用于主键
         const fullUuid = crypto.randomUUID();
 
+        // --- 自动检测并创建数据库表（新手免 SQL 建表） ---
+        // 💡 如果在 D1 数据库中已手动建好 images 表，可注释掉下面这行代码：
+        await initDatabase(env);
+
         // --- 写入 D1 索引数据库 (images 表) ---
         // 使用 INSERT OR REPLACE 避免 stored_name 唯一索引冲突
         await env.myd1.prepare(
@@ -794,19 +827,19 @@ async function handleX2R(request, env) {
  * 这是原来的tg图床, 新的不行了, 原来的都支持
  */
 async function handletelegraph(request, env) {
-            const targetURL = 'https://telegra.ph';
-            const newRequest = new Request(targetURL + new URL(request.url).pathname, request);
-            newRequest.headers.delete('Host');
-            newRequest.headers.delete('Referer');
-            const response = await fetch(newRequest);
-            const headers = new Headers(response.headers);    // 添加 CORS 标头
-            headers.set('Access-Control-Allow-Origin', '*'); // 只允许自己的跨域, 全部请用 '*'
-            headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-            headers.set('Access-Control-Allow-Headers', 'Content-Type');
+    const targetURL = 'https://telegra.ph';
+    const newRequest = new Request(targetURL + new URL(request.url).pathname, request);
+    newRequest.headers.delete('Host');
+    newRequest.headers.delete('Referer');
+    const response = await fetch(newRequest);
+    const headers = new Headers(response.headers);    // 添加 CORS 标头
+    headers.set('Access-Control-Allow-Origin', '*'); // 只允许自己的跨域, 全部请用 '*'
+    headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    headers.set('Access-Control-Allow-Headers', 'Content-Type');
 
-            return new Response(response.body, {
-                status: response.status,
-                statusText: response.statusText,
-                headers: headers
-            });
+    return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: headers
+    });
 }
