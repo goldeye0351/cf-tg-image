@@ -114,11 +114,7 @@ javascript
 // await initDatabase(env);
 ```
 
-## 图床演示地址
 
-https://pichub.nexteek.com/
-
-nexteek专用图床
 
 ---
 
