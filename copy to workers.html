@@ -12,7 +12,7 @@ export default {
             });
         }
 
-        // ⭐ 返回前端上传页面 (根路由)
+        // ⭐ 新增：返回前端上传页面 (根路由)
         if (url.pathname === "/" && request.method === "GET") {
             return handleUploadPage();
         }
@@ -22,27 +22,27 @@ export default {
             return await handletelegraph(request, env);
         }
 
-        // ⭐ 返回隐藏的瀑布流图库页面
+        // ⭐ 新增：返回隐藏的瀑布流图库页面
         if (url.pathname === "/secret-gallery" && request.method === "GET") {
             return handleGalleryPage();
         }
 
-        //  路由处理：文件上传 API (POST)
+        // 2. 路由处理：文件上传 API (POST)
         if (url.pathname === "/api/upload" && request.method === "POST") {
             return await handleUpload(request, env);
         }
 
-        // 路由处理：获取图片列表 API (GET) 带分页
+        // 3. 路由处理：获取图片列表 API (GET) 带分页
         if (url.pathname === "/api/images" && request.method === "GET") {
             return await handleListImages(request, env);
         }
 
-        // ⭐ 处理来自 Notion 的 Webhook 上传
+        // ⭐ 新增：处理来自 Notion 的 Webhook 上传
         if (url.pathname === "/x2r" && request.method === "POST") {
             return await handleX2R(request, env);
         }
 
-        // 路由处理：获取/访问图片原图 (兜底的 GET 请求)
+        // 4. 路由处理：获取/访问图片原图 (兜底的 GET 请求)
         if (request.method === "GET" && url.pathname !== "/") {
             return await handleGetImage(url.pathname.substring(1), env);
         }
@@ -66,24 +66,31 @@ async function computeSHA256(arrayBuffer) {
  *    可以在下面的 handleUpload / handleListImages / handleX2R 函数中，
  *    找到 `await initDatabase(env);` 并将其注释掉（例如 `// await initDatabase(env);`），以获得微小的性能提升。
  */
+let isDbInitialized = false;
+
 async function initDatabase(env) {
-    if (!env.myd1) return;
-    await env.myd1.batch([
-        env.myd1.prepare(`
-            CREATE TABLE IF NOT EXISTS images (
-                id TEXT PRIMARY KEY,
-                original_name TEXT,
-                stored_name TEXT UNIQUE,
-                size INTEGER,
-                mime_type TEXT,
-                file_hash TEXT,
-                upload_time DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-        `),
-        env.myd1.prepare(`
-            CREATE INDEX IF NOT EXISTS idx_images_hash ON images(file_hash);
-        `)
-    ]);
+    if (isDbInitialized || !env.myd1) return;
+    try {
+        await env.myd1.batch([
+            env.myd1.prepare(`
+                CREATE TABLE IF NOT EXISTS images (
+                    id TEXT PRIMARY KEY,
+                    original_name TEXT,
+                    stored_name TEXT UNIQUE,
+                    size INTEGER,
+                    mime_type TEXT,
+                    file_hash TEXT,
+                    upload_time DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+            `),
+            env.myd1.prepare(`
+                CREATE INDEX IF NOT EXISTS idx_images_hash ON images(file_hash);
+            `)
+        ]);
+        isDbInitialized = true;
+    } catch (err) {
+        console.error("Failed to init database:", err);
+    }
 }
 
 /**
@@ -91,12 +98,29 @@ async function initDatabase(env) {
  */
 async function handleUpload(request, env) {
     // --- 安全鉴权 ---
-    const domain = env.DOMAIN
+    const domain = (env.DOMAIN || "").replace(/\/+$/, "");
     const authHeader = request.headers.get("Authorization");
     if (!authHeader || authHeader !== env.APIKEY) {
         return new Response(JSON.stringify({ error: "Unauthorized" }), {
             status: 401,
-            headers: { "Content-Type": "application/json" }
+            headers: { 
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            }
+        });
+    }
+
+    // --- 资源绑定校验（友好提示） ---
+    if (!env.myr2) {
+        return new Response(JSON.stringify({ error: "R2 存储桶 (myr2) 未绑定，请在 Cloudflare Worker 设置中添加 R2 绑定" }), {
+            status: 500,
+            headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+        });
+    }
+    if (!env.myd1) {
+        return new Response(JSON.stringify({ error: "D1 数据库 (myd1) 未绑定，请在 Cloudflare Worker 设置中添加 D1 绑定" }), {
+            status: 500,
+            headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
         });
     }
 
@@ -105,7 +129,13 @@ async function handleUpload(request, env) {
         const file = formData.get("file");
 
         if (!file || !(file instanceof File)) {
-            return new Response(JSON.stringify({ error: "No file uploaded" }), { status: 400 });
+            return new Response(JSON.stringify({ error: "No file uploaded" }), { 
+                status: 400,
+                headers: { 
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*"
+                }
+            });
         }
 
         // --- 核心改动：读取文件内容并计算 SHA-256 哈希值 ---
@@ -209,7 +239,10 @@ async function handleUpload(request, env) {
     } catch (error) {
         return new Response(JSON.stringify({ error: error.message }), {
             status: 500,
-            headers: { "Content-Type": "application/json" }
+            headers: { 
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            }
         });
     }
 }
@@ -218,11 +251,30 @@ async function handleUpload(request, env) {
  * 处理图片读取
  */
 async function handleGetImage(filename, env) {
-    const decodedFilename = decodeURI(filename);
+    if (!env.myr2) {
+        return new Response("R2 storage not configured", { 
+            status: 500,
+            headers: { "Access-Control-Allow-Origin": "*" }
+        });
+    }
+
+    let decodedFilename = decodeURI(filename);
+
+    // 💡 容错：如果未启用 Cloudflare 图片转换导致请求原样打到 Worker，自动剥离前缀回退到读取 R2 原图
+    if (decodedFilename.startsWith("cdn-cgi/image/")) {
+        const parts = decodedFilename.split("/");
+        if (parts.length >= 4) {
+            decodedFilename = parts.slice(3).join("/");
+        }
+    }
+
     const object = await env.myr2.get(decodedFilename);
 
     if (object === null) {
-        return new Response("Image Not Found", { status: 404 });
+        return new Response("Image Not Found", { 
+            status: 404,
+            headers: { "Access-Control-Allow-Origin": "*" }
+        });
     }
 
     const headers = new Headers();
@@ -238,13 +290,23 @@ async function handleGetImage(filename, env) {
  * 处理获取图片列表 (带分页)
  */
 async function handleListImages(request, env) {
-    const domain = env.DOMAIN
+    const domain = (env.DOMAIN || "").replace(/\/+$/, "");
     // --- 1. 安全鉴权 (和上传接口一样，保护公司数据) ---
     const authHeader = request.headers.get("Authorization");
     if (!authHeader || authHeader !== env.APIKEY) {
         return new Response(JSON.stringify({ error: "Unauthorized" }), {
             status: 401,
-            headers: { "Content-Type": "application/json" }
+            headers: { 
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            }
+        });
+    }
+
+    if (!env.myd1) {
+        return new Response(JSON.stringify({ error: "D1 数据库 (myd1) 未绑定，请在 Cloudflare Worker 设置中添加 D1 绑定" }), {
+            status: 500,
+            headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
         });
     }
 
@@ -682,20 +744,26 @@ function handleGalleryPage() {
                 gallery.innerHTML = '';
                 data.data.forEach(item => {
                     const finalUrl = item.optimizedUrl || item.rawUrl;
+                    const isVideo = (item.mimeType && item.mimeType.startsWith('video/')) || 
+                                    (item.storedName && (item.storedName.endsWith('.mp4') || item.storedName.endsWith('.webm') || item.storedName.endsWith('.mov')));
+                    const safeName = (item.originalName || '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
+                    
                     const div = document.createElement('div');
                     div.className = 'masonry-item';
-                    // 点击整个卡片复制链接
                     div.onclick = () => {
                         navigator.clipboard.writeText(finalUrl);
-                        alert('图片链接已复制！');
+                        alert((isVideo ? '视频' : '图片') + '链接已复制！');
                     };
                     
-                    // 使用 loading="lazy" 实现前端的按需加载，节省流量
+                    const mediaHtml = isVideo
+                        ? \`<video src="\${finalUrl}" preload="metadata" muted playsinline style="width: 100%; display: block; max-height: 280px; background: #000;"></video>\`
+                        : \`<img src="\${finalUrl}" loading="lazy" alt="\${safeName}">\`;
+
                     div.innerHTML = \`
-                        <img src="\${finalUrl}" loading="lazy" alt="\${item.originalName}">
+                        \${mediaHtml}
                         <div class="item-info">
-                            \${item.originalName}<br>
-                            \${(item.size / 1024).toFixed(1)} KB
+                            \${safeName}<br>
+                            \${(item.size / 1024).toFixed(1)} KB \${isVideo ? '🎬 视频' : '🖼️ 图片'}
                         </div>
                     \`;
                     gallery.appendChild(div);
@@ -727,11 +795,17 @@ function handleGalleryPage() {
  * 新增： 这是把x的图片转为图床中, 主要是因为国内访问不了x. 处理 x2r Notion Webhook 上传 (保存为原始文件名，不改变文件名且不进行秒传去重)
  */
 async function handleX2R(request, env) {
-    const domain = env.DOMAIN
+    const domain = (env.DOMAIN || "").replace(/\/+$/, "");
     const headers = request.headers;
     const authorization = headers.get("Authorization");
     if (!authorization || authorization !== env.APIKEY) {
-        return new Response("Unauthorized", { status: 401 });
+        return new Response(JSON.stringify({ error: "Unauthorized" }), { 
+            status: 401,
+            headers: { 
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            }
+        });
     }
 
     try {
@@ -741,7 +815,13 @@ async function handleX2R(request, env) {
         const picurl = body?.data?.properties?.URL_Pic?.url;
 
         if (!picurl) {
-            return new Response('Missing picurl in request body', { status: 400 });
+            return new Response(JSON.stringify({ error: 'Missing picurl in request body' }), { 
+                status: 400,
+                headers: { 
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*"
+                }
+            });
         }
 
         // 从 URL 中提取原始文件名
