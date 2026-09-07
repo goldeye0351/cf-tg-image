@@ -116,7 +116,7 @@ javascript
 
 ## 图床演示地址
 
-https://pichub.51xmi.com/
+https://pichub.nexteek.com/
 
 nexteek专用图床
 
@@ -152,9 +152,9 @@ nexteek专用图床
 
 ## 演示地址
 
-## https://pichub.51xmi.com
+## https://pichub.nexteek.com
  
- ![pichub 51xmi](./file_36.jpg)
+ ![pichub nexteek](./file_36.jpg)
  
 
 
