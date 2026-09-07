@@ -155,8 +155,9 @@ async function handleUpload(request, env) {
 
         // 如果数据库里已经存在相同哈希的文件，直接返回已有文件的 URL，不上传 R2
         if (existingRecord) {
+            const isVideo = existingRecord.stored_name.endsWith('.mp4') || existingRecord.stored_name.endsWith('.webm') || existingRecord.stored_name.endsWith('.mov');
             const fileUrl = `${domain}/${existingRecord.stored_name}`;
-            const optimizedUrl = `${domain}/cdn-cgi/image/format=auto/${existingRecord.stored_name}`;
+            const optimizedUrl = isVideo ? fileUrl : `${domain}/cdn-cgi/image/format=auto/${existingRecord.stored_name}`;
 
             return new Response(
                 JSON.stringify({
@@ -216,8 +217,9 @@ async function handleUpload(request, env) {
             .run();
 
         // --- 返回成功结果 (写死您要求的域名) ---
+        const isVideo = (file.type && file.type.startsWith('video/')) || extension.toLowerCase() === '.mp4' || extension.toLowerCase() === '.webm' || extension.toLowerCase() === '.mov';
         const fileUrl = `${domain}/${storedName}`;
-        const optimizedUrl = `${domain}/cdn-cgi/image/format=auto/${storedName}`;
+        const optimizedUrl = isVideo ? fileUrl : `${domain}/cdn-cgi/image/format=auto/${storedName}`;
 
         return new Response(
             JSON.stringify({
@@ -340,17 +342,21 @@ async function handleListImages(request, env) {
             .all();
 
         // --- 5. 组装返回数据 (顺手帮你把优化后的 CDN 链接也拼进去) ---
-        const formattedData = results.map(item => ({
-            id: item.id,
-            originalName: item.original_name,
-            storedName: item.stored_name,
-            size: item.size,
-            mimeType: item.mime_type,
-            uploadTime: item.upload_time,
-            rawUrl: `${domain}/${item.stored_name}`,
-            // 结合上一轮的优化，直接返回自带 auto format 的生产环境链接
-            optimizedUrl: `${domain}/cdn-cgi/image/format=auto/${item.stored_name}`
-        }));
+        const formattedData = results.map(item => {
+            const isVideo = (item.mime_type && item.mime_type.startsWith('video/')) ||
+                            (item.stored_name && (item.stored_name.endsWith('.mp4') || item.stored_name.endsWith('.webm') || item.stored_name.endsWith('.mov')));
+            const rawUrl = `${domain}/${item.stored_name}`;
+            return {
+                id: item.id,
+                originalName: item.original_name,
+                storedName: item.stored_name,
+                size: item.size,
+                mimeType: item.mime_type,
+                uploadTime: item.upload_time,
+                rawUrl: rawUrl,
+                optimizedUrl: isVideo ? rawUrl : `${domain}/cdn-cgi/image/format=auto/${item.stored_name}`
+            };
+        });
 
         // --- 6. 返回标准化的 JSON 结构 ---
         return new Response(
@@ -601,10 +607,10 @@ function handleUploadPage() {
 
                 if (data.success) {
                     document.getElementById('result').style.display = 'block';
-                    const finalUrl = data.optimizedUrl || data.url || data.rawUrl;
+                    const isVideo = file.type.startsWith('video/') || file.name.endsWith('.mp4') || file.name.endsWith('.webm') || file.name.endsWith('.mov');
+                    const finalUrl = isVideo ? (data.url || data.rawUrl) : (data.optimizedUrl || data.url || data.rawUrl);
                     
                     const previewContainer = document.getElementById('previewContainer');
-                    const isVideo = file.type.startsWith('video/') || file.name.endsWith('.mp4');
                     
                     if (isVideo) {
                         previewContainer.innerHTML = '<video src="' + finalUrl + '" controls style="width: 100%; max-height: 240px;"></video>';
@@ -743,9 +749,9 @@ function handleGalleryPage() {
 
                 gallery.innerHTML = '';
                 data.data.forEach(item => {
-                    const finalUrl = item.optimizedUrl || item.rawUrl;
                     const isVideo = (item.mimeType && item.mimeType.startsWith('video/')) || 
                                     (item.storedName && (item.storedName.endsWith('.mp4') || item.storedName.endsWith('.webm') || item.storedName.endsWith('.mov')));
+                    const finalUrl = isVideo ? item.rawUrl : (item.optimizedUrl || item.rawUrl);
                     const safeName = (item.originalName || '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
                     
                     const div = document.createElement('div');
