@@ -154,7 +154,7 @@ nexteek专用图床
 
 ## https://pichub.nexteek.com
  
- ![pichub nexteek](./file_36.jpg)
+ ![pichub nexteek](./file_36.png)
  
 
 
